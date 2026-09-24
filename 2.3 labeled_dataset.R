@@ -1,15 +1,7 @@
 ## ============================================================
 ## Append-only snippet: labeled version of the Stage 3 cleaned dataset
 ## ============================================================
-## NOTE: this is a SECONDARY/reporting output only -- for the next step
-## (phenotype analysis), use the NUMERIC-CODED HF_continuum_cleaned_dataset.xlsx,
-## NOT this labeled file. Text labels ("Yes"/"No") would break every ==
-## comparison in the analysis script (e.g. mcq160b == 1), the exact bug
-## class this whole project has been fixing -- this file exists purely
-## for human-readable review/sharing, never as analysis input.
-##
-## Always freshly loads the file (no exists() check) to avoid using a
-## stale/wrong object left over from a different R session state.
+
 library(readxl)
 library(writexl)
 library(dplyr)
@@ -52,10 +44,6 @@ label_maps <- list(
   mortstat = c(`0` = "Assumed alive", `1` = "Assumed deceased"),
   diabetes = c(`0` = "No", `1` = "Yes"),
   hyperten = c(`0` = "No", `1` = "Yes")
-  ## eligstat and ucod_leading deliberately NOT mapped -- their exact
-  ## coding wasn't independently verified against NCHS documentation in
-  ## this project (unlike everything else here). Left as numeric codes
-  ## rather than risk a wrong label.
 )
 
 labeled_data <- cleaned_data
@@ -64,10 +52,6 @@ for (v in names(label_maps)) {
   n_before_nonmissing <- sum(!is.na(labeled_data[[v]]))
   labeled_data[[v]] <- unname(label_maps[[v]][as.character(labeled_data[[v]])])
   n_after_nonmissing <- sum(!is.na(labeled_data[[v]]))
-  ## Verification: if labeling worked, non-missing count should be
-  ## IDENTICAL before/after (every real code should have found a label).
-  ## If it prints a mismatch here, something in label_maps doesn't match
-  ## the actual codes in the data -- check the printed table below it.
   if (n_before_nonmissing != n_after_nonmissing) {
     message("  WARNING: ", v, " -- non-missing count changed from ",
             n_before_nonmissing, " to ", n_after_nonmissing,

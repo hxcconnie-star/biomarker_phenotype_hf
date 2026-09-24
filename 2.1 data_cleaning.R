@@ -1,5 +1,4 @@
 ## ============================================================
-## Biomarker-Informed Phenotyping of the HF Continuum
 ## Data Cleaning: between Extraction and Analysis
 ## ============================================================
 ##
@@ -8,16 +7,6 @@
 ## Output: data/HF_continuum_cleaned_dataset.xlsx    (feed this into
 ##         hf_continuum_phenotype_analysis.R instead of the raw file)
 ##
-## Why this exists as its own step: several categorical variables come
-## back from the extraction pipeline as CHARACTER TEXT rather than clean
-## numeric codes (confirmed cases: hiq011, kiq022, mcq160b-f, diq010,
-## bpq020/050a/080, smq020/040, riagendr, ridexprg, dmdeduc2, huq030,
-## fsdhh). This isn't visible as an error -- comparisons like
-## `mcq160b == 1` silently return FALSE instead of crashing, which
-## corrupts downstream results (Stage A/B/C assignment, cohort exclusions)
-## without any warning. Centralizing the fix here means the analysis
-## script can just trust the data rather than re-deriving these checks
-## every time its own logic changes.
 ##
 ## 2.1 variable profiling (data-driven, all columns) -> 2.2 harmonize
 ## categorical text (+ residual check for anything missed) -> 2.3 range/
@@ -40,35 +29,11 @@ hf_continuum_data <- readxl::read_excel("data/HF_continuum_analytic_dataset.xlsx
 message("Loaded raw extracted data: ", nrow(hf_continuum_data), " rows x ",
         ncol(hf_continuum_data), " cols")
 
-## CRITICAL FIX: the mortality-linkage columns (ELIGSTAT, MORTSTAT,
-## UCOD_LEADING, DIABETES, HYPERTEN, PERMTH_INT, PERMTH_EXM) came through
-## in UPPERCASE, while every other column and all downstream code
-## (this script, the analysis script) uses lowercase. R is case-sensitive
-## for column names -- without this fix, `filter(!is.na(eligstat))` in
-## the analysis script's cohort-construction step would fail with
-## "object 'eligstat' not found". Confirmed via the variable profile.
 names(hf_continuum_data) <- tolower(names(hf_continuum_data))
 
-## Snapshot valid (non-missing) % per column BEFORE any cleaning, so a
-## before/after report can be built at the end (section 4). This is what
-## would have caught the ridageyr bug (cohort criterion mistakenly used
-## as a plausibility bound, silently nulling 15,794 genuine child ages)
-## immediately and automatically, instead of relying on manually noticing
-## a "value(s) outside plausible range" console message.
 valid_pct_before <- sapply(hf_continuum_data, function(x) round(100 * mean(!is.na(x)), 2))
 
 ## ---- 2.1 Variable profiling (first 50 rows) --------------------------
-## Instead of assuming which columns need harmonizing based on what broke
-## before, look at what's ACTUALLY there first: for every single column,
-## report its class, how many distinct values it has, and a sample of
-## those values. This is data-driven rather than memory-driven -- it will
-## catch a problem column we haven't hit yet, not just the ones already
-## known (hiq011, mcq160b-f, dmdeduc2, huq030...). Excel round-tripping
-## (write in the extraction script, read back here) strips any R
-## factor-ness, so a column that was a labelled factor there shows up as
-## plain character here -- comparisons like `mcq160b == 1` then silently
-## return FALSE (not an error) if the actual stored value is text like
-## "Yes", which is very easy to miss without actually looking.
 preview <- head(hf_continuum_data, 50)
 
 profile_variable <- function(x, varname) {
@@ -91,12 +56,6 @@ message("\nReview the table above: any 'character' class column with sample valu
         " profile shows something new/different, that's the signal to add/adjust one.")
 
 ## ---- 2.1b Full untruncated text for low-cardinality character columns --
-## The tibble print above truncates individual long string values to fit
-## the console width (confirmed: this is exactly what hid paq180's actual
-## response categories, which are full sentences). For any character
-## column with a small number of distinct values, print each one in full
-## with message() instead, so nothing gets cut off before a harmonizer is
-## written for it.
 low_card_char_cols <- profile_report %>%
   filter(class == "character", n_distinct > 0, n_distinct <= 10) %>%
   pull(variable)
@@ -109,12 +68,6 @@ for (v in low_card_char_cols) {
 }
 
 ## ---- 2.2 Harmonize categorical text to clean numeric codes -----------
-## IMPORTANT: all patterns are anchored (^...$) to require an EXACT
-## match, not a substring match -- grepl("no", "don't know") is TRUE
-## (since "know" contains "no"), which would silently miscode "Don't
-## know" responses as "No" with an unanchored pattern. "Don't know"/
-## "Refused" are valid NHANES non-response categories that must stay
-## unclassified (NA), not get swept into a real answer.
 harmonize_yesno <- function(x, yes_pattern = "^1$|^yes$", no_pattern = "^2$|^no$") {
   x_chr <- tolower(trimws(as.character(x)))
   out <- rep(NA_real_, length(x_chr))
@@ -128,11 +81,6 @@ harmonize_yesno <- function(x, yes_pattern = "^1$|^yes$", no_pattern = "^2$|^no$
   out
 }
 
-## REAL text confirmed via profiling has trailing punctuation ("Every
-## day," / "Not at all?") that broke the original exact-anchored
-## patterns, leaving this 100% NA. Fix: substring match instead --
-## "every day"/"some days"/"not at all" don't collide with each other or
-## with "Refused"/"Don't know", so dropping the anchors here is safe.
 harmonize_smq040 <- function(x) {
   x_chr <- tolower(trimws(as.character(x)))
   out <- rep(NA_real_, length(x_chr))
@@ -160,16 +108,6 @@ harmonize_riagendr <- function(x) {
   out
 }
 
-## ridexprg (1=Pregnant, 2=Not pregnant, 3=Cannot ascertain). REAL text
-## confirmed via profiling: "SP not pregnant at exam" / "Yes, positive lab
-## pregnancy test or self-reported pregnant at exam" -- NOT the short
-## "pregnant"/"not pregnant" exact strings originally assumed, so exact
-## anchoring left this 100% NA. Fix: substring match, broad "pregnant"
-## first, then more specific "not pregnant" SECOND so it overwrites the
-## broad match for those rows (order matters here -- later assignments
-## win). Both sample phrases actually contain "pregnant" as a substring,
-## which is why the broad-then-specific ordering is needed rather than a
-## single anchored pattern.
 harmonize_ridexprg <- function(x) {
   x_chr <- tolower(trimws(as.character(x)))
   out <- rep(NA_real_, length(x_chr))
@@ -214,14 +152,6 @@ harmonize_huq030 <- function(x) {
   out
 }
 
-## huq010 (1=Excellent, 2=Very good, 3=Good, 4=Fair, 5=Poor) -- self-rated
-## health. Confirmed real text has trailing punctuation from the question
-## wording itself ("Excellent,", "Fair, or", "Poor?"), same pattern as
-## smq040/paq180. ALSO has the same substring-collision risk as riagendr's
-## male/female fix: "very good" contains "good" as a substring. Order
-## matters here -- assign the broad "good" match (3) FIRST, then the more
-## specific "very good" match (2) SECOND so it overwrites those rows back
-## to the correct value.
 harmonize_huq010 <- function(x) {
   x_chr <- tolower(trimws(as.character(x)))
   out <- rep(NA_real_, length(x_chr))
@@ -238,11 +168,6 @@ harmonize_huq010 <- function(x) {
   out
 }
 
-## ridreth1 (1=Mexican American, 2=Other Hispanic, 3=Non-Hispanic White,
-## 4=Non-Hispanic Black, 5=Other Race - Including Multi-Racial) -- matches
-## official NHANES RIDRETH1 coding. Confirmed real text via profiling:
-## "Non-Hispanic Black", "Non-Hispanic White", "Other Race - Including
-## Multi-Racial", "Mexican American", "Other Hispanic".
 harmonize_ridreth1 <- function(x) {
   x_chr <- tolower(trimws(as.character(x)))
   out <- rep(NA_real_, length(x_chr))
@@ -259,12 +184,6 @@ harmonize_ridreth1 <- function(x) {
   out
 }
 
-## paq180 (1=Sit/don't walk much, 2=Stand/walk a lot, 3=Lift light loads/
-## climb stairs, 4=Heavy work/carry heavy loads). Order CONFIRMED against
-## CDC's own codebook pages for all three cycles (PAQ.htm 1999-2000,
-## PAQ_B.htm 2001-2002, PAQ_C.htm 2003-2004) -- not guessed this time.
-## Substrings chosen to be distinctive and non-colliding across the four
-## category sentences.
 harmonize_paq180 <- function(x) {
   x_chr <- tolower(trimws(as.character(x)))
   out <- rep(NA_real_, length(x_chr))
@@ -280,8 +199,6 @@ harmonize_paq180 <- function(x) {
   out
 }
 
-## ssbnpl (0=Within detection limits, 1=Below lower detection limit,
-## 2=Above upper detection limit) -- NT-proBNP detection-limit flag.
 harmonize_ssbnpl <- function(x) {
   x_chr <- tolower(trimws(as.character(x)))
   out <- rep(NA_real_, length(x_chr))
@@ -296,9 +213,6 @@ harmonize_ssbnpl <- function(x) {
   out
 }
 
-## sspris (1=Pristine/never thawed, 0=Non-pristine) -- NT-proBNP sample
-## quality flag. Anchored exact match is safe here since "non-pristine"
-## as a full string never equals "pristine" exactly.
 harmonize_sspris <- function(x) {
   x_chr <- tolower(trimws(as.character(x)))
   out <- rep(NA_real_, length(x_chr))
@@ -331,11 +245,6 @@ hf_continuum_data <- hf_continuum_data %>%
     ridreth1 = harmonize_ridreth1(ridreth1),
     ssbnpl   = harmonize_ssbnpl(ssbnpl),
     sspris   = harmonize_sspris(sspris),
-    ## fsdhh is 4-level (1-4), not binary -- try numeric first, else map
-    ## known category text to 1-4. CONFIRMED via full-text profiling: some
-    ## cycles store plain digit-strings ("1"-"4"), others store long
-    ## descriptive labels ("HH marginal food security: 1-2") -- this logic
-    ## already handles both correctly, verified against the real values.
     fsdhh_num = suppressWarnings(as.numeric(fsdhh)),
     fsdhh = case_when(
       !is.na(fsdhh_num) ~ fsdhh_num,
@@ -345,12 +254,10 @@ hf_continuum_data <- hf_continuum_data %>%
       grepl("very low", tolower(fsdhh)) ~ 4,
       TRUE ~ NA_real_
     ),
-    ## Age-at-diagnosis variables and mortality follow-up should be numeric.
+
     across(c(mcd180b, mcd180c, mcd180d, mcd180e, mcd180f,
              eligstat, mortstat), ~ suppressWarnings(as.numeric(.x))),
-    ## Every other numeric-looking column: coerce defensively in case any
-    ## slipped through as character/factor without us noticing (harmless
-    ## no-op if already numeric).
+
     across(c(ridageyr, bmxbmi, bmxwaist, indfmpir, ssbnp,
              bpxsy1, bpxsy2, bpxsy3, bpxsy4, bpxdi1, bpxdi2, bpxdi3, bpxdi4,
              lbxgh, lbxscr, lbxsal, urxuma, urxucr, lbxtr, lbdldl, lbxtc, lbdhdd,
@@ -367,11 +274,6 @@ for (v in c("hiq011", "kiq022", "fsdhh", "mcq160b", "riagendr", "ridexprg",
 }
 
 ## ---- 2.2b Residual check: any character column not yet handled? -------
-## Safety net for the profiling approach: after applying all the named
-## harmonizers above, re-check EVERY column's class. Anything still
-## character wasn't covered by a harmonizer above and needs one -- this
-## is how a NEW problem variable gets caught instead of silently passing
-## through as text into the analysis script.
 still_character <- names(hf_continuum_data)[sapply(hf_continuum_data, is.character)]
 if (length(still_character) > 0) {
   message("\n*** ", length(still_character), " column(s) still character after harmonizing -- ",
@@ -385,12 +287,6 @@ if (length(still_character) > 0) {
 }
 
 ## ---- 2.3 Range / plausibility checks for continuous variables --------
-## Physiologically implausible values (data entry/transcription errors,
-## unit mismatches) get set to NA and reported, rather than silently
-## feeding a wrong number into a formula (e.g. eGFR, phenotype flags).
-## Bounds are generous (deliberately wide, "clearly impossible" territory)
-## -- not clinical normal ranges, so real extreme-but-genuine values
-## aren't discarded.
 flag_out_of_range <- function(x, lower, upper, varname) {
   bad <- !is.na(x) & (x < lower | x > upper)
   if (any(bad)) {
@@ -402,21 +298,7 @@ flag_out_of_range <- function(x, lower, upper, varname) {
   x
 }
 
-## IMPORTANT DISTINCTION: this range check is for PHYSIOLOGICAL/LOGICAL
-## IMPOSSIBILITY ONLY (data entry errors, unit mix-ups) -- NOT for the
-## study's cohort inclusion criteria (e.g. "adults >=20"). Confusing the
-## two is a real bug we hit: ridageyr was set to c(20, 85), which is the
-## COHORT criterion (applied properly, transparently, in the analysis
-## script's Section 4), not a plausibility bound -- it silently nulled out
-## 15,794 genuine child/adolescent age records (0-19) that are valid data,
-## just not part of this study's target population. Fixed to (0, 85),
-## the actual physiologically-possible range (NHANES top-codes age at 85
-## for this era). Also widened several lab/BP bounds that were nulling
-## real-but-rare extreme values rather than genuine errors (e.g. DBP=0 is
-## a documented legitimate NHANES auscultatory finding, not an error;
-## LDL/HDL/urine creatinine can genuinely reach the flagged "outlier"
-## values in rare but real cases like familial hypercholesterolemia or
-## concentrated urine samples).
+
 range_bounds <- list(
   ridageyr = c(0, 85),      # FIXED: was (20, 85) -- that's a cohort criterion, not a plausibility bound
   bmxbmi   = c(8, 95),     # widened slightly (was 10, 90) as a precaution against the same age-assumption issue
@@ -470,8 +352,6 @@ for (v in c("mcd180b", "mcd180c", "mcd180d", "mcd180e", "mcd180f")) {
   hf_continuum_data <- check_age_consistency(hf_continuum_data, v)
 }
 
-## Pregnancy status should only apply to females -- flagged, not
-## auto-corrected, since it's unclear which of the two variables is wrong.
 bad_preg <- !is.na(hf_continuum_data$ridexprg) & hf_continuum_data$ridexprg == 1 &
   !is.na(hf_continuum_data$riagendr) & hf_continuum_data$riagendr == 1
 if (any(bad_preg)) {

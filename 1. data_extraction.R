@@ -12,11 +12,6 @@ analytic_years <- c(1999, 2001, 2003)
 
 
 ## ---- 1. Variable map ------------------------------------------------
-## dataset = nhanesdata dataset name (VERIFY with term_search()/get_url()
-## if a read_nhanes() call below fails -- catalog names aren't all
-## independently confirmed here)
-## vars    = lowercase variable names to keep from that dataset
-##
 ## Domain                    Dataset      Variables                              Notes
 ## ------------------------  -----------  -------------------------------------  --------------------------------
 ## Identifiers/design         demo         seqn, sdmvpsu, sdmvstra,
@@ -41,7 +36,7 @@ analytic_years <- c(1999, 2001, 2003)
 ## NT-proBNP (special/surplus)  ssbnp        ssbnp, ssbnpl, sspris                loaded separately in section 3
 ##                                                                                 (single pooled file, nhanesA::nhanes("SSBNP_A"))
 ##
-## The following are NOT in var_map -- nhanesdata has 1999-2004 coverage gaps
+## NOT in var_map -- nhanesdata has 1999-2004 coverage gaps
 ## and/or these variables were literally renamed for later cycles, so both
 ## groups are loaded robustly via nhanesA::nhanesSearchVarName() instead,
 ## which looks up the exact correct table name/year per variable directly
@@ -90,28 +85,6 @@ person_level_list <- purrr::imap(var_map, ~ safe_read(.y, .x))
 person_level_list <- purrr::compact(person_level_list)   # drop any that failed to load
 
 ## ---- 2B. Lab variables via nhanesA (robust to 1999-2004 legacy naming) ----
-## nhanesdata has gaps for these older-format lab files (see note above), so
-## instead of guessing legacy CDC file names (LAB10, L40_2, etc.), we look
-## them up dynamically per variable using nhanesA::nhanesSearchVarName(),
-## which returns the exact correct table name AND begin year for every table
-## containing that variable -- no guessing, self-correcting regardless of
-## naming era.
-##
-## TWO SEPARATE QUIRKS confirmed in L40_B (2001-2002) alone:
-##  1. nhanesSearchVarName()'s live scrape of CDC's variable index silently
-##     dropped this table for lbxscr/lbxsal even though it genuinely exists
-##     (L40_B.htm on CDC's site) -- likely CDC site instability during the
-##     2026 government shutdown rather than a real gap. Fixed via
-##     manual_table_overrides below.
-##  2. Even once loaded, L40_B names creatinine "LBDSCR", not "LBXSCR" --
-##     breaking the usual LBX=measured/LBD..SI=derived pattern used in
-##     every other cycle. Fixed via var_aliases below.
-## Given a single file had two different quirks, there may be others we
-## haven't hit yet. Safeguards: (1) var_aliases for the one confirmed so
-## far, (2) if a table loads but NONE of a group's variables (or aliases)
-## are found in it, we print that table's full column list so a new alias
-## is immediately visible instead of silently missing, and (3) a loud
-## warning if any analytic year is still missing at the end.
 manual_table_overrides <- list(
   biopro = list(`2001` = "L40_B")   # confirmed to exist on CDC; scrape missed it
 )
@@ -159,11 +132,6 @@ extract_vars <- function(df, varnames, tbl) {
   }
   out <- df[, resolved[found], drop = FALSE]
   names(out) <- varnames[found]
-  ## Force numeric: these are continuous lab values, but nhanesA sometimes
-  ## returns a column as a labelled factor in one cycle's table and as a
-  ## plain double in another's -- bind_rows() can't combine those types when
-  ## stacking cycles together later, so standardize here (safe for
-  ## continuous values; factor levels for these are numeric-as-text anyway).
   out[] <- lapply(out, function(x) suppressWarnings(as.numeric(as.character(x))))
   out
 }
@@ -223,8 +191,6 @@ load_lab_group <- function(varnames, label, ystart = 1999, ystop = 2004) {
   if (nrow(out) == 0) return(NULL)
   out <- out %>% distinct(seqn, year, .keep_all = TRUE)   # safety net against residual duplicates
   
-  ## Loud warning if any analytic year is still missing after overrides --
-  ## surfaces new gaps instead of letting them pass silently.
   missing_years <- setdiff(c(ystart, ystart + 2, ystart + 4), unique(out$year))
   if (length(missing_years) > 0) {
     warning("Lab group '", label, "' is missing year(s): ", paste(missing_years, collapse = ", "),
@@ -240,45 +206,9 @@ lab_list <- purrr::imap(lab_groups, function(vars, label) {
 })
 lab_list <- purrr::compact(lab_list)
 
-## Fold lab_list into the same year+seqn-keyed collection used in section 4
 person_level_list <- c(person_level_list, lab_list)
 
 ## ---- 2C. Insurance + MCQ age-at-diagnosis variables via nhanesA -------
-## Also came back empty, for two different reasons:
-##  - Health insurance: the questionnaire was completely redesigned in
-##    2005-2006. For 1999-2004 "covered by health insurance" is named
-##    HID010, not HIQ011 (CDC: "HIQ011 is comparable to HID010 in
-##    2003-2004") -- it never existed as HIQ011 in our analytic window.
-##    We pull HID010 and rename it to hiq011 so downstream code/codebook
-##    stay consistent.
-##  - MCQ age-at-diagnosis follow-ups: same nhanesdata 1999-2004 coverage
-##    gap as the lab files (section 2B), PLUS ALL FIVE age-at-diagnosis
-##    variables are named MCQ180B/C/D/E/F (not MCD180*) for 1999-2004 --
-##    confirmed by testing: MCD180C/D returned "no tables found" for this
-##    window. The MCD180* prefix was only introduced in later cycles.
-##  - fsdhh: confirmed (via coverage audit) 0% in 1999 and 2001, ~95% in
-##    2003. HHFDSEC is the right column name (confirmed directly:
-##    names(nhanesA::nhanes("FSQ")) and names(nhanesA::nhanes("FSQ_B"))
-##    both contain it) -- but nhanesSearchVarName()'s live scrape missed
-##    both tables anyway, the same failure mode as biopro/2001 (L40_B).
-##    Fixed with a direct manual_table_overrides_legacy entry below,
-##    bypassing the unreliable search entirely for this variable.
-##  - kiq022: confirmed 0% in 1999, ~49% in 2001/2003 (partial coverage in
-##    those years is expected -- likely a skip pattern, not a bug).
-##    1999-2000 names this KIQ020, not KIQ022.
-## fsdhh/kiq022 need a DIFFERENT source name in different cycles (unlike
-## hiq011/mcd180*, which use one alternate name across all three), so each
-## entry below is a vector of candidate names tried across the analytic
-## window; whichever candidate exists in a given cycle's table is used.
-##
-## NOTE: self-rated health (protocol §7) is sourced as huq010, added
-## directly to the "huq" entry in var_map above (not routed through this
-## legacy_vars/nhanesA mechanism) -- it's in the same HUQ file as huq030,
-## which already loads cleanly via nhanesdata with no known issues, so no
-## special handling is needed. (An earlier version of this script tried
-## the MEC-based HSD010/HSQ file instead; switched to HUQ010 per
-## confirmation that it's present and consistently named across all three
-## 1999-2004 cycles, and it avoids a whole separate file/loading path.)
 legacy_vars <- list(
   hiq011  = "HID010",
   mcd180b = "MCQ180B",
@@ -290,9 +220,6 @@ legacy_vars <- list(
   kiq022  = c("KIQ022", "KIQ020")    # 2001-2004 = KIQ022; 1999-2000 = KIQ020
 )
 
-## Confirmed table names for cases where nhanesSearchVarName()'s live scrape
-## misses a table that genuinely exists (verified directly via
-## names(nhanesA::nhanes(tbl))). Bypasses the search entirely for these.
 manual_table_overrides_legacy <- list(
   fsdhh = list(`1999` = "FSQ", `2001` = "FSQ_B")   # confirmed: both contain HHFDSEC
 )
@@ -337,11 +264,6 @@ load_renamed_var <- function(source_names, output_name, ystart = 1999, ystop = 2
       return(NULL)
     }
     sn <- sn_hit[1]
-    ## Coerce to character: nhanesA::nhanes() sometimes returns a column as a
-    ## labelled factor in one cycle's table and as a plain numeric/character
-    ## in another (confirmed: FSQ_C's FSDHH came back as a factor, FSQ's
-    ## HHFDSEC as a double) -- bind_rows() can't combine those types later,
-    ## so standardize here. Recode/convert as needed during analysis.
     df %>%
       transmute(seqn = as.numeric(seqn), year = yr, !!output_name := as.character(.data[[sn]]))
   })
@@ -385,30 +307,6 @@ legacy_list <- purrr::compact(legacy_list)
 person_level_list <- c(person_level_list, legacy_list)
 
 ## ---- 3. NT-proBNP: load directly via nhanesA -----------------------
-## CONFIRMED (via user testing): nhanes("SSBNP_A") returns the FULL
-## pooled 1999-2004 NT-proBNP dataset in one call -- CDC released this
-## one-time retrospective (archived-serum) study as a single combined
-## file rather than per-cycle files, unlike standard NHANES components.
-## There is no "SSBNP_B"/"SSBNP_C" -- SSBNP_A already has everyone.
-##
-## CONFIRMED per NHANES documentation (SSBNP_A/SSCARD_A/SSTROP_A share
-## the same subsample): this file also carries the subsample-specific
-## survey weights WTSSCB2Y and WTSSCB4Y, which MUST be used for this
-## biomarker subsample instead of the general WTMEC2YR exam weight --
-## using WTMEC2YR here was flagged in review as methodologically
-## incorrect for this dataset. Each person has exactly ONE of the two
-## weight columns populated, never both: WTSSCB4Y for participants
-## examined during 1999-2002 (this subsample's 4-year weight already
-## pools the 1999-2000 and 2001-2002 cycles together), WTSSCB2Y for
-## participants examined during 2003-2004 alone. The correct 6-year
-## pooled weight is constructed downstream (in the main analysis script)
-## as WTSSCB4Y*(2/3) for the first group and WTSSCB2Y*(1/3) for the
-## second, not a uniform /3 of a single weight variable.
-##
-## This file has NO year column. That's fine: NHANES SEQN values never
-## repeat across cycles (each 2-year cycle uses a distinct, non-
-## overlapping SEQN range), so merging by seqn alone is safe here --
-## no risk of matching the wrong person from a different cycle.
 message("Loading NT-proBNP (pooled 1999-2004) from CDC: SSBNP_A")
 ssbnp <- tryCatch(nhanesA::nhanes("SSBNP_A"), error = function(e) {
   warning("Could not load SSBNP_A via nhanesA: ", conditionMessage(e))
@@ -421,10 +319,7 @@ if (!is.null(ssbnp)) {
     select(seqn, any_of(c("ssbnp", "ssbnpl", "sspris", "wtsscb2y", "wtsscb4y"))) %>%
     mutate(seqn = as.numeric(seqn))
   message("NT-proBNP loaded: ", nrow(ssbnp), " rows (pooled across 1999-2004)")
-  ## Defensive check: confirm the weight columns actually came through --
-  ## if nhanesA ever changes what it returns for this file, this stops
-  ## the pipeline here with a clear message instead of silently
-  ## producing all-NA weights downstream.
+
   if (!all(c("wtsscb2y", "wtsscb4y") %in% names(ssbnp))) {
     warning("wtsscb2y/wtsscb4y not found in SSBNP_A as returned by nhanesA -- ",
             "the biomarker subsample weight construction downstream will fail.",
@@ -447,8 +342,6 @@ nhanes_analytic <- purrr::reduce(
   ~ dplyr::full_join(.x, .y, by = c("seqn", "year"), relationship = "one-to-one")
 )
 
-## NT-proBNP joins by seqn only (pooled file, no year column -- see
-## section 3 for why this is safe).
 if (!is.null(ssbnp)) {
   nhanes_analytic <- nhanes_analytic %>%
     mutate(seqn = as.numeric(seqn)) %>%
@@ -459,20 +352,6 @@ message("Analytic NHANES 1999-2004 dataset: ", nrow(nhanes_analytic), " rows x "
         ncol(nhanes_analytic), " cols")
 
 ## ---- 4.5. Diagnostic: per-year data coverage audit --------------------
-## The loading-time checks above (sections 2/2B/2C) don't catch everything:
-##  - A multi-variable group only warns if it matches NONE of its target
-##    variables in a table, not if it's missing just one (exactly what
-##    LBDSCR was, before we added that alias).
-##  - Variables still sourced via nhanesdata (section 2, e.g. mcq160b-f,
-##    bpq*, diq010, smq*, paq*, bmx*, bpx*, huq030, demographics) never
-##    got the per-year presence check built for the nhanesA-routed
-##    variables -- they could still have an undiscovered 1999-2004 gap.
-## This audits the ACTUAL final merged data instead of anticipating
-## failure modes in advance, so it catches anything the checks above
-## missed. Read this before trusting the dataset.
-##
-## Simple base-R version: split by year, compute % non-missing per column,
-## bind into one table (rows = variable, columns = year).
 check_df <- nhanes_analytic %>% select(-any_of(c("sdmvpsu", "sdmvstra")), -seqn, -year)
 years <- sort(unique(nhanes_analytic$year))
 

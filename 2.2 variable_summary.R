@@ -40,17 +40,6 @@ message("Raw data: ", nrow(raw_data), " rows x ", ncol(raw_data), " cols")
 message("Cleaned data: ", nrow(cleaned_data), " rows x ", ncol(cleaned_data), " cols")
 
 ## ---- 2. Generic summary function (works for numeric or character) -----
-## Numeric column -> one row (n, missing, mean, sd, median, min, max).
-## Character column -> one row PER distinct category (incl. NA as its own
-## row), with n and %, so every observed label is visible.
-##
-## IMPORTANT: after cleaning, harmonized categorical variables (mcq160b,
-## riagendr, etc.) are stored as numeric codes (1, 2, 3...), not text --
-## that's correct for analysis, but means is.numeric() alone can't tell
-## "categorical coded as numbers" apart from a genuinely continuous
-## variable like bmxbmi. Without this list, Stage 3 would show mcq160b's
-## summary as "mean=1.34, sd=0.47" instead of a frequency table, which
-## isn't what a categorical variable's summary should look like.
 categorical_vars <- c(
   "riagendr", "ridreth1", "dmdeduc2", "ridexprg", "huq030", "huq010",
   "mcq160b", "mcq160c", "mcq160d", "mcq160e", "mcq160f",
@@ -93,11 +82,6 @@ message("\nBuilding Stage 1 (raw) summary...")
 stage1_summary <- summarize_dataset(raw_data, categorical_vars)
 
 ## ---- 4. Stage 2: RECODED (standardized labels, non-response visible) ---
-## These mirror the harmonize_*() functions in the cleaning script, but
-## output a READABLE LABEL for Don't know/Refused/etc. instead of NA, and
-## standardize messy raw text variants (punctuation, casing) into one
-## consistent label per real category. Confirmed real text values are
-## from the variable-profiling step run earlier in this project.
 recode_label_yesno <- function(x) {
   x_chr <- tolower(trimws(as.character(x)))
   out <- rep(NA_character_, length(x_chr))
@@ -166,10 +150,6 @@ recode_label_huq030 <- function(x) {
   out
 }
 
-## huq010 (self-rated health). Same "good" vs "very good" substring
-## collision as the cleaning script's harmonize_huq010() -- assign the
-## broad "good" match first, then the more specific "very good" match
-## second so it overwrites those rows back to the correct label.
 recode_label_huq010 <- function(x) {
   x_chr <- tolower(trimws(as.character(x)))
   out <- rep(NA_character_, length(x_chr))
@@ -245,10 +225,6 @@ recode_label_sspris <- function(x) {
   out
 }
 
-## mcd180b-f are effectively continuous (age in years) but contain NHANES
-## sentinel codes (99999=Don't know, 77777=Refused) mixed in as text/
-## numbers. Kept as a hybrid: real ages stay numeric-like for a normal
-## distribution summary, sentinel codes get their own labeled rows.
 recode_label_age_sentinel <- function(x) {
   x_chr <- trimws(as.character(x))
   x_num <- suppressWarnings(as.numeric(x_chr))
@@ -281,9 +257,7 @@ recoded_data <- raw_data
 for (v in names(recoders)) {
   if (v %in% names(recoded_data)) recoded_data[[v]] <- recoders[[v]](recoded_data[[v]])
 }
-## mcd180b-f: bin the real (non-sentinel) numeric-looking ages into decade
-## buckets for a readable frequency table, instead of ~70 individual-age
-## rows -- keep the sentinel labels ("Don't know"/"Refused") as-is.
+
 bin_age_labels <- function(x) {
   is_sentinel <- x %in% c("Don't know", "Refused") | grepl("^Other/unrecognized", x)
   x_num <- suppressWarnings(as.numeric(x))
