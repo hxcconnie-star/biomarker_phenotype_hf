@@ -13,30 +13,16 @@ n_imputations <- saved$n_imputations
 message("Loaded imputed_cohorts (n = ", n_imputations, ")")
 
 ## ============================================================
-## RESULTS §4: Mortality trajectories across phenotypes (Methods §6)
+## Mortality trajectories across phenotypes
 ## ============================================================
 
 ## ---- 9.1a Unadjusted survey-weighted Kaplan-Meier curves ------------
-## Doesn't involve covariates, so runs on the pre-MI cohort directly --
-## MI and non-MI versions should be identical here (KM only uses
-## phenotype, mortstat, permth_exm, none of which are ever imputed).
-##
-## se=TRUE confirmed feasible via a 20% subsample test: ~64 sec / ~4.2GB
-## peak memory, extrapolating to roughly ~5 min / potentially >4.2GB
-## (likely non-linear, could be higher) on the full cohort. If this
-## stalls or errors with a memory issue, drop back to se=FALSE and use
-## the case-weighted survfit()+Greenwood approach from 9.3 instead.
 km_design <- svydesign(ids = ~sdmvpsu, strata = ~sdmvstra, weights = ~wtmec6yr,
                        nest = TRUE, data = cohort)
 km_fit <- svykm(Surv(permth_exm, mortstat) ~ hf_continuum_label, design = km_design) #se=TRUE
 
 message("\n---- 9.1 Survey-weighted Kaplan-Meier: unadjusted survival at 60/120 months ----")
 km_summary <- purrr::imap_dfr(km_fit, function(fit, label) {
-  ## suppressWarnings(): benign "regularize.values" warnings from approx()
-  ## handling tied event/censoring times (expected with whole-month
-  ## follow-up granularity) -- confirmed harmless earlier in this
-  ## project; now that the pipeline has many approx() calls, letting
-  ## these print (50+ times) is just noise.
   tibble(
     hf_continuum_label = label,
     surv_60mo = suppressWarnings(approx(fit$time, fit$surv, xout = 60, method = "constant", rule = 2)$y),
@@ -44,50 +30,9 @@ km_summary <- purrr::imap_dfr(km_fit, function(fit, label) {
   )
 })
 print(km_summary)
-# 
-# ## Figure: survey-weighted KM curves with 95% CI ribbons, one line per
-# ## phenotype. svykm(se=TRUE) stores variance on the LOG-SURVIVAL scale
-# ## ($varlog) -- CI computed via exp(log(S) +/- 1.96*sqrt(varlog)), the
-# ## standard log-transformed CI for a survival curve (matches what
-# ## confint.svykm() would give, done manually here to keep the data in a
-# ## plotting-ready tibble). The "regularize.values" warnings from
-# ## approx() above are benign (tied event/censoring times).
-# km_curve_data <- purrr::imap_dfr(km_fit, function(fit, label) {
-#   se_log_surv <- sqrt(fit$varlog)
-#   tibble(
-#     hf_continuum_label = label,
-#     time = fit$time,
-#     surv = fit$surv,
-#     lower = pmax(0, exp(log(pmax(fit$surv, .Machine$double.eps)) - 1.96 * se_log_surv)),
-#     upper = pmin(1, exp(log(pmax(fit$surv, .Machine$double.eps)) + 1.96 * se_log_surv))
-#   )
-# })
-# 
-# km_plot <- ggplot2::ggplot(km_curve_data, ggplot2::aes(x = time, y = surv, color = hf_continuum_label,
-#                                                        fill = hf_continuum_label)) +
-#   ggplot2::geom_ribbon(ggplot2::aes(ymin = lower, ymax = upper), alpha = 0.15, color = NA) +
-#   ggplot2::geom_step(linewidth = 0.8) +
-#   ggplot2::scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
-#   ggplot2::labs(
-#     x = "Follow-up time (months)", y = "Survival probability",
-#     color = "HF-continuum phenotype", fill = "HF-continuum phenotype",
-#     title = "Survey-weighted Kaplan-Meier survival by HF-continuum phenotype",
-#     subtitle = "Shaded bands: 95% CI"
-#   ) +
-#   ggplot2::theme_minimal(base_size = 12) +
-#   ggplot2::theme(legend.position = "bottom")
-# 
-# 
-# ggplot2::ggsave("data/HF_continuum_KM_curves.png", km_plot, width = 8, height = 6, dpi = 300)
-# message("Saved: data/HF_continuum_KM_curves.png")
 
-## ---- 9.1a Unadjusted Kaplan-Meier curves (轻量版，不用svykm) -----------
-## 彻底换掉 svykm(se=TRUE)：全量跑崩溃证实了内存不是线性增长，硬件扛不住。
-## 换成 survival::survfit() 直接用 case weights（不走survey design的线性化
-## 方差），计算量小得多——代价是CI没有完整反映复杂抽样设计的聚类/分层方差，
-## 只是加权点估计 + 近似CI，不是严格design-based的。
 
-## 如果session里还有imputed_cohorts等大对象，先清掉，释放内存
+## ---- 9.1a Unadjusted Kaplan-Meier curves (light) -----------
 if (exists("imputed_cohorts")) rm(imputed_cohorts)
 if (exists("boot_results_list")) rm(boot_results_list)
 gc()
@@ -95,7 +40,6 @@ gc()
 km_fit_light <- survfit(Surv(permth_exm, mortstat) ~ hf_continuum_label,
                         data = cohort, weights = wtmec6yr)
 
-## 60/120个月时的生存率，survfit自带插值，不用再手动approx()
 km_summary_wide <- summary(km_fit_light, times = c(60, 120))
 km_summary <- tibble(
   hf_continuum_label = gsub("hf_continuum_label=", "", km_summary_wide$strata),
@@ -108,7 +52,6 @@ km_summary <- tibble(
 message("\n---- 9.1 Case-weighted Kaplan-Meier: unadjusted survival at 60/120 months ----")
 print(km_summary)
 
-## 完整曲线数据（含CI），从survfit对象里直接展开，不用再自己手算公式
 km_curve_data <- tibble(
   hf_continuum_label = rep(names(km_fit_light$strata), km_fit_light$strata),
   time = km_fit_light$time,
@@ -118,7 +61,6 @@ km_curve_data <- tibble(
 ) %>%
   mutate(hf_continuum_label = gsub("hf_continuum_label=", "", hf_continuum_label))
 
-# max_time <- max(km_curve_data$time, na.rm = TRUE)
 
 km_plot <- ggplot2::ggplot(km_curve_data, ggplot2::aes(x = time, y = surv, color = hf_continuum_label,
                                                        fill = hf_continuum_label)) +
@@ -126,12 +68,6 @@ km_plot <- ggplot2::ggplot(km_curve_data, ggplot2::aes(x = time, y = surv, color
   ggplot2::geom_step(linewidth = 0.8) +
   ggplot2::scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
   ggplot2::scale_x_continuous(limits = c(0, 240), breaks = seq(0, 240, by = 60), expand = c(0.01, 0.01)) +
-  # ggplot2::scale_x_continuous(breaks = seq(0, floor(max(km_curve_data$time, na.rm = TRUE) / 60) * 60, by = 60)) +
-  # ggplot2::scale_x_continuous(
-  #   limits = c(0, max_time),
-  #   breaks = seq(0, ceiling(max_time / 60) * 60, by = 60),
-  #   expand = c(0.01, 0.01)  ## 只留一点点边距，不要默认的5%
-  # ) +
   ggplot2::labs(
     x = "Follow-up time (months)", y = "Survival probability",
     color = "HF-continuum phenotype", fill = "HF-continuum phenotype",
@@ -139,68 +75,11 @@ km_plot <- ggplot2::ggplot(km_curve_data, ggplot2::aes(x = time, y = surv, color
   ) +
   ggplot2::theme_minimal(base_size = 14) +
   ggplot2::theme(legend.position = "bottom",
-                 panel.grid.minor = ggplot2::element_blank())   ## 去掉次网格线
+                 panel.grid.minor = ggplot2::element_blank())
 
 ggplot2::ggsave("data/HF_continuum_KM_curves.png", km_plot, width = 12, height = 6, dpi = 300)
 message("Saved: data/HF_continuum_KM_curves.png (case-weighted, with approximate 95% CI)")
 
-
-# Only description, no more in figure
-# ## ---- adding Censoring marks -------------------------------------------------
-# censoring_raw <- cohort %>% filter(mortstat == 0) %>% select(hf_continuum_label, cens_time = permth_exm)
-# 
-# censoring_marks <- purrr::map_dfr(unique(censoring_raw$hf_continuum_label), function(lvl) {
-#   curve_i <- km_curve_data %>% filter(hf_continuum_label == lvl)
-#   times_i <- censoring_raw %>% filter(hf_continuum_label == lvl) %>% pull(cens_time)
-#   tibble(
-#     hf_continuum_label = lvl,
-#     time = times_i,
-#     surv = suppressWarnings(approx(curve_i$time, curve_i$surv, xout = times_i,
-#                                    method = "constant", rule = 2)$y)
-#   )
-# })
-# 
-# ## ---- adding Numbers at risk, placed DIRECTLY ON each curve (not a separate table) ----
-# ## At each landmark time, compute the unweighted at-risk count (standard
-# ## convention -- raw sample count, not population-weighted), then look up
-# ## that curve's survival probability AT that time so the label can sit
-# ## right on the line. geom_label() (white background box, not plain
-# ## text) keeps the number readable where curves/ribbons overlap.
-# max_followup <- max(cohort$permth_exm, na.rm = TRUE)
-# risk_landmark_times <- seq(60, floor(max_followup / 60) * 60, by = 60)   # every 5 years starting from year 5
-# 
-# risk_labels_on_curve <- purrr::map_dfr(unique(cohort$hf_continuum_label), function(lvl) {
-#   curve_i <- km_curve_data %>% filter(hf_continuum_label == lvl)
-#   purrr::map_dfr(risk_landmark_times, function(t) {
-#     n_at_risk <- sum(cohort$hf_continuum_label == lvl & cohort$permth_exm >= t, na.rm = TRUE)
-#     surv_at_t <- suppressWarnings(approx(curve_i$time, curve_i$surv, xout = t,
-#                                          method = "constant", rule = 2)$y)
-#     tibble(hf_continuum_label = lvl, time = t, n_at_risk = n_at_risk, surv_at_time = surv_at_t)
-#   })
-# })
-# 
-# ## ---- Assemble final plot: curve + CI ribbon + censoring ticks + risk labels ----
-# km_plot_main <- km_plot +
-#   ggplot2::geom_point(data = censoring_marks,
-#                       mapping = ggplot2::aes(x = time, y = surv, color = hf_continuum_label),
-#                       shape = 3, size = 1.6, alpha = 0.5, inherit.aes = FALSE) +
-#   ggplot2::geom_label(data = risk_labels_on_curve,
-#                       mapping = ggplot2::aes(x = time, y = surv_at_time, label = n_at_risk,
-#                                              color = hf_continuum_label),
-#                       size = 2.6, fontface = "bold", label.size = 0.15,
-#                       label.padding = ggplot2::unit(0.12, "lines"),
-#                       show.legend = FALSE, inherit.aes = FALSE)
-# 
-# km_plot <- km_plot_main
-# 
-# ggplot2::ggsave("data/HF_continuum_KM_curves.png", km_plot, width = 12, height = 7, dpi = 300)
-# message("Saved: data/HF_continuum_KM_curves.png (case-weighted, with censoring marks and on-curve at-risk labels)")
-
-
-## ---- 9.1b Deaths / person-years / weighted mortality rate (Table 3) --
-## Doesn't need MI (mortstat/permth_exm are never imputed, always
-## complete by cohort construction). Both unweighted (raw counts, for
-## transparency) and weighted (survey-representative) versions reported.
 mortality_rate_table <- cohort %>%
   group_by(hf_continuum_label) %>%
   summarise(
@@ -220,27 +99,10 @@ message("\n---- 9.1b Deaths / person-years / mortality rate by phenotype ----")
 print(mortality_rate_table)
 
 ## ---- 9.2 Adjusted survey-weighted Cox models, pooled across MI -----
-## Follows protocol §8.4's nested model structure EXACTLY:
 ##   Model 1: age, sex, race/ethnicity
 ##   Model 2: Model 1 + education, poverty-income ratio, insurance
 ##   Model 3: Model 2 + hypertension, diabetes, obesity, CKD, smoking, CHD/MI/stroke
-##   Model 4: Model 3 + log NT-proBNP -- NOT FIT HERE. Protocol §8.4 says
-##            explicitly: "except when NT-proBNP is part of the exposure
-##            definition... do not adjust for NT-proBNP because it
-##            defines Stage B." Our exposure (hf_continuum_label) uses
-##            NT-proBNP to define Stage B, so adjusting for NT-proBNP
-##            again in the same model would mean controlling for the very
-##            variable that defines part of the exposure -- collinear by
-##            construction, and would bias the Stage B coefficient toward
-##            null. Model 4 only makes sense for a DIFFERENT exposure
-##            specification that doesn't itself depend on NT-proBNP.
-##
-## svycoxph() (not plain coxph()) is required for correct variance
-## estimation under the survey design. Each model is fit on EVERY imputed
-## dataset separately, then combined via Rubin's rules (mitools::MIcombine).
-## Model 0: unadjusted (phenotype only, no covariates) -- for Table 3's
-## "Unadjusted HR" column, distinct from the KM curves in 9.1 (KM gives
-## survival probabilities, this gives an actual unadjusted hazard ratio).
+
 cox_formula_m0 <- Surv(permth_exm, mortstat) ~ hf_continuum_label
 cox_formula_m1 <- Surv(permth_exm, mortstat) ~ hf_continuum_label +
   ridageyr + riagendr + ridreth1
@@ -248,8 +110,6 @@ cox_formula_m2 <- update(cox_formula_m1, . ~ . + dmdeduc2 + indfmpir + hiq011)
 cox_formula_m3 <- update(cox_formula_m2, . ~ . + flag_hypertension + flag_diabetes +
                            flag_obesity + flag_ckd + flag_smoking + flag_chd_mi + flag_stroke)
 
-## Model 3 is the primary/main model per protocol §8.5 (the fully-
-## adjusted model against which the central hypothesis is tested).
 cox_formula <- cox_formula_m3
 
 fit_pooled_cox <- function(formula, label) {
@@ -264,12 +124,7 @@ fit_pooled_cox <- function(formula, label) {
     svycoxph(formula, design = design_i)
   })
   pooled <- mitools::MIcombine(models)
-  ## NOTE: mitools::summary.MIresult()'s column names ("results", "se",
-  ## "(lower", "upper)") are a known quirk of that package, not verified
-  ## against a live run in this project -- if this errors with "object
-  ## not found", run print(names(as.data.frame(summary(pooled)))) first
-  ## and adjust the column names to match what your mitools version
-  ## actually returns.
+  
   summ <- summary(pooled) %>%
     as.data.frame() %>%
     tibble::rownames_to_column("term") %>%
@@ -283,9 +138,6 @@ cox_m1 <- fit_pooled_cox(cox_formula_m1, "Model 1 (age/sex/race)")
 cox_m2 <- fit_pooled_cox(cox_formula_m2, "Model 2 (+ education/PIR/insurance)")
 cox_m3 <- fit_pooled_cox(cox_formula_m3, "Model 3 (+ HTN/DM/obesity/CKD/smoking/CHD-MI/stroke)")
 
-## Keep the original object names for backward compatibility with the
-## rest of the script (9.3 standardized curves, 10 sensitivity) -- these
-## now refer to Model 3, the primary/main model.
 cox_models <- cox_m3$models
 cox_pooled <- cox_m3$pooled
 cox_pooled_summary <- cox_m3$summary
@@ -295,22 +147,6 @@ cox_all_models_summary <- bind_rows(cox_m0$summary, cox_m1$summary, cox_m2$summa
 print(cox_all_models_summary %>% filter(grepl("hf_continuum_label", term)))
 
 ## ---- Forest Plots: ggforest-style, ALL covariates, one figure per model ----
-## Per your correction: each model's plot should show EVERY covariate in
-## that model (like survminer::ggforest() does for a single model), not
-## just the phenotype/exposure terms -- this is what actually lets you
-## see what each nested model (1 -> 2 -> 3) added. Layout is the same
-## classic 3-panel style as before (label | HR text | forest plot), still
-## built with patchwork, still one PNG per model -- just no longer
-## filtered down to hf_continuum_label only.
-##
-## Table 3 (section 11) still only reports non-HR columns (deaths/PY,
-## mortality rate, adjusted 10-year risk, RMST difference) and points to
-## these figures for HR estimates, so numbers aren't duplicated.
-
-## Readable label for every term that can appear across Model 0-3.
-## Covers: the phenotype exposure itself, plus every covariate's dummy/
-## continuous term, matching how R names Cox model coefficients (dummy
-## variables get the category CODE appended, e.g. "riagendr2").
 term_labels <- c(
   "hf_continuum_labelStage A (at risk)" = "Stage A (at risk)",
   "hf_continuum_labelStage B (pre-HF, biomarker)" = "Stage B (pre-HF, biomarker)",
@@ -336,10 +172,6 @@ term_labels <- c(
   "flag_stroke1" = "Stroke History (Yes vs No)"
 )
 
-## Display order: exposure first, then demographics, then SES, then
-## comorbidities -- matches the natural Model 1 -> 2 -> 3 build-up order,
-## reversed for plotting (ggplot puts the FIRST factor level at the
-## BOTTOM of the y-axis, so reverse to get this order top-to-bottom).
 term_order <- rev(names(term_labels))
 
 forest_data <- cox_all_models_summary %>%
@@ -349,12 +181,6 @@ forest_data <- cox_all_models_summary %>%
     label_text = sprintf("%.2f (%.2f-%.2f)", HR, HR_lower, HR_upper)
   )
 
-## Shared x-axis (HR, log scale) range across ALL FOUR models -- this is
-## what makes the combined figure below "commonly interpretable": every
-## panel's forest sub-plot uses the identical HR range, so a reader can
-## visually compare where a given term sits across Model 0-3 without the
-## axis itself shifting the apparent effect size. Padded slightly (10%
-## in log-space) so points near the edge aren't clipped against the axis.
 hr_range <- range(c(forest_data$HR_lower, forest_data$HR_upper), na.rm = TRUE)
 hr_limits_shared <- c(hr_range[1] * 0.9, hr_range[2] * 1.1)
 
@@ -369,16 +195,13 @@ build_classic_forest_plot <- function(model_data, model_title, x_limits = NULL) 
     ggplot2::theme(plot.margin = ggplot2::margin(r = 2, l = 4))
   
   ## log
-  x_limits_log <- c(0.5, 10)   ## 坐标轴显示范围到10；breaks里的16只是刻度参考值，
-  ## 实际不会显示在轴上（超过了显示上限），如果您想让
-  ## 16也出现在轴上，把这里改成 c(0.5, 16) 即可
+  x_limits_log <- c(0.5, 10)
 
   panel_forest <- ggplot2::ggplot(model_data, ggplot2::aes(x = HR, y = term_label)) +
     ggplot2::geom_vline(xintercept = 1, linetype = "dashed", color = "grey50") +
     ggplot2::geom_pointrange(ggplot2::aes(xmin = pmax(HR_lower, x_limits_log[1]),
                                           xmax = pmin(HR_upper, x_limits_log[2])),
                              color = "#2C3E50", size = 0.55, linewidth = 0.7) +
-    ## CI上界超过10的行，在坐标轴右边缘画个箭头标注"数值超出范围"
     ggplot2::geom_segment(
       data = model_data %>% dplyr::filter(HR_upper > x_limits_log[2]),
       ggplot2::aes(x = x_limits_log[2] * 0.85, xend = x_limits_log[2] * 0.98,
@@ -396,36 +219,6 @@ build_classic_forest_plot <- function(model_data, model_title, x_limits = NULL) 
     ggplot2::theme(axis.text.y = ggplot2::element_blank(),
                    axis.ticks.y = ggplot2::element_blank(),
                    panel.grid = ggplot2::element_blank())
-  
-  
-  # ## liner
-  # x_limits_linear <- c(0, 10)
-  # 
-  # panel_forest <- ggplot2::ggplot(model_data, ggplot2::aes(x = HR, y = term_label)) +
-  #   ggplot2::geom_vline(xintercept = 1, linetype = "dashed", color = "grey50") +
-  #   ggplot2::geom_pointrange(ggplot2::aes(xmin = pmax(HR_lower, x_limits_linear[1]),
-  #                                         xmax = pmin(HR_upper, x_limits_linear[2])),
-  #                            color = "#2C3E50", size = 0.35, linewidth = 0.7) +
-  #   # ggplot2::geom_errorbar(ggplot2::aes(xmin = pmax(HR_lower, x_limits_linear[1]),
-  #   #                                      xmax = pmin(HR_upper, x_limits_linear[2])),
-  #   #                         height = 0.15, color = "#2C3E50", linewidth = 0.6) +
-  #   ## CI上界超过10的行，同样加箭头标注
-  #   ggplot2::geom_segment(
-  #     data = model_data %>% dplyr::filter(HR_upper > x_limits_linear[2]),
-  #     ggplot2::aes(x = x_limits_linear[2] * 0.85, xend = x_limits_linear[2] * 0.98,
-  #                  y = term_label, yend = term_label),
-  #     arrow = ggplot2::arrow(length = ggplot2::unit(0.08, "inches")),
-  #     color = "#2C3E50", linewidth = 0.7
-  #   ) +
-  #   ggplot2::scale_x_continuous(
-  #     limits = x_limits_linear,
-  #     breaks = seq(0, 10, by = 2)   ## 0,2,4,6,8,10 等距刻度，可以改成 by=1 更密
-  #   ) +
-  #   ggplot2::labs(x = "Hazard Ratio (linear scale)", y = NULL) +
-  #   ggplot2::theme_minimal(base_size = 11) +
-  #   ggplot2::theme(axis.text.y = ggplot2::element_blank(),
-  #                  axis.ticks.y = ggplot2::element_blank(),
-  #                  panel.grid = ggplot2::element_blank())
   
   panel_hr_text <- ggplot2::ggplot(model_data, ggplot2::aes(x = 0, y = term_label)) +
     ggplot2::geom_text(ggplot2::aes(label = label_text), hjust = 0.5, size = 3.4) +
@@ -456,12 +249,6 @@ build_classic_forest_plot <- function(model_data, model_title, x_limits = NULL) 
   list(plot = combined, n_rows = n_rows)
 }
 
-## Suggested captions (edit as needed) -- matching the classic style of
-## explicitly stating each model's adjustment set, nested the same way
-## your example shows ("Model 2 was adjusted as for model 1 and for...").
-## Note these plots now show ALL covariates' own HRs too (not just
-## phenotype), so the caption's job is just to state what was adjusted
-## for -- the reader can see each covariate's individual HR directly.
 model_captions <- c(
   "Model 0 (Unadjusted)" =
     "Fig. Forest plot for the unadjusted Cox proportional hazards model. HR: hazard ratio; CI: confidence interval. No covariates adjusted.",
@@ -480,8 +267,6 @@ model_file_suffix <- c(
   "Model 3 (+ HTN/DM/obesity/CKD/smoking/CHD-MI/stroke)" = "Model3"
 )
 
-## ---- Original 4 individual plots (UNCHANGED) -- each auto-scaled to ---
-## its own data, own number of rows, saved exactly as before.
 built_plots <- list()
 for (m in unique(forest_data$model)) {
   built <- build_classic_forest_plot(forest_data %>% filter(model == m), m, x_limits = hr_limits_shared)
@@ -517,7 +302,6 @@ fit_model3_releveled <- function(ref_level, imputed_cohorts, cox_formula_m3) {
     mutate(
       reference = ref_level,
       HR = exp(results), HR_lower = exp(`(lower`), HR_upper = exp(`upper)`),
-      ## p值：MIcombine汇总对象里没有直接给p值，用正态近似从results/se反推
       z = results / se,
       p_value = 2 * pnorm(-abs(z))
     ) %>%
@@ -578,34 +362,6 @@ message("\nSaved: data/HF_continuum_pairwise_stage_comparisons.xlsx")
 
 
 ## ---- 9.3 Adjusted survival curves standardized to the cohort -------
-## CONFIRMED BUG, FIXED: the previous version's primary path called
-## predict(rep_cox, newdata=..., type="curve") on multi-row newdata,
-## expecting ONE aggregated curve back. Direct inspection (str() on the
-## returned object) confirmed this actually returns ONE CURVE PER PERSON
-## (a list of length nrow(rep_data), each element an individual
-## svykmcox/svykm object) -- NOT a single marginal curve. The code's
-## fallback branch for exactly this list-of-curves case then averaged
-## them with plain rowMeans(surv_mat), with NO survey weight applied at
-## all. This means the "confirmed correct" 12-25% point estimates
-## reported throughout this project (Table 3, Figure 4, Results text)
-## were actually an UNWEIGHTED sample average of individual predicted
-## curves, not the weighted marginal/population-standardized estimate
-## the manuscript describes them as.
-##
-## Fix: predict(type="curve") is no longer used at all. The point
-## estimate is now computed directly via case-weighted coxph() + hand-
-## computed survival (S(t|x) = exp(-H0(t)*exp(x'beta)), matrix algebra,
-## no survfit() call), with an explicit weighted.mean() using wtmec6yr
-## at every time point. This is the SAME computation validated earlier
-## against survfit() with zero numerical difference, and is now used as
-## the sole path (not a fallback) so there is no risk of silently
-## reverting to an unweighted branch.
-##
-## CONSEQUENCE: point estimates changed somewhat from the previously
-## reported ~12-25% range once correctly weighted -- Table 3, Figure 4,
-## and any Results text quoting standardized 10-year risk must be
-## re-generated from this corrected version, not patched with the old
-## numbers.
 rep_data <- imputed_cohorts[[1]] %>%
   mutate(across(c(riagendr, ridreth1, dmdeduc2, hf_continuum_label,
                   flag_hypertension, flag_diabetes, flag_obesity,
@@ -614,9 +370,7 @@ rep_data <- imputed_cohorts[[1]] %>%
 
 time_grid_93 <- seq(0, 120, by = 2)
 
-## Case-weighted Cox fit (na.exclude keeps model.matrix() row indices
-## aligned so weights can be correctly matched even if any rows are
-## dropped for missingness elsewhere in the pipeline).
+## Case-weighted Cox fit 
 fit_93 <- do.call("coxph", list(
   formula = cox_formula, data = rep_data, weights = rep_data$wtmec6yr,
   x = TRUE, na.action = na.exclude
@@ -662,13 +416,6 @@ standardized_summary <- standardized_curves %>%
 print(standardized_summary)
 
 ## ---- 9.3b Bootstrap CI for the corrected weighted point estimate -----
-## Uses the SAME weighted matrix computation as the point estimate above
-## (not survfit(), not predict(type="curve")) for every replicate, so
-## point estimate and CI are guaranteed to come from one consistent
-## algorithm. Cluster bootstrap (PSU within stratum) for design-aware
-## variance. Runtime: ~0.5 sec/phenotype x 4 phenotypes x B replicates
-## (confirmed via timing test -- the matrix approach is ~90x faster than
-## calling survfit() 4 times per replicate).
 cluster_bootstrap_ids_93 <- function(data, psu_var = "sdmvpsu", strata_var = "sdmvstra") {
   strata_ids <- unique(data[[strata_var]])
   purrr::map_dfr(strata_ids, function(s) {
@@ -751,11 +498,7 @@ standardized_curves_ci_93 <- boot_curves_93 %>%
   )
 
 ## ---- Figure 4: adjusted cumulative mortality through 10 years -------
-## Point estimate and CI now both computed via the identical weighted
-## matrix algorithm (fit_93/coxph on rep_data for the point estimate,
-## the same algorithm re-run per bootstrap replicate for the CI) --
-## no more predict(type="curve") vs. survfit() vs. hand-computed
-## mismatch.
+## Point estimate and CI now both computed via the identical weighted matrix algorithm
 fig4_data <- standardized_curves %>%
   filter(time <= 120) %>%
   left_join(standardized_curves_ci_93, by = c("hf_continuum_label", "time")) %>%
@@ -796,42 +539,6 @@ message("Saved: data/HF_continuum_Figure4_adjusted_cumulative_mortality.png (wei
 ## ============================================================
 ## 9.3c Estimand documentation and covariate-overlap diagnostic
 ## ============================================================
-## CONFIRMED, per review: the jump from ~1.5% observed (unadjusted) 10-
-## year mortality in the no-apparent-risk group to ~?% standardized
-## is NOT a computational error. It reflects that these are two
-## different estimands:
-##   - Observed/unadjusted risk: the actual 10-year mortality experienced
-##     BY the people who are currently classified as no-apparent-risk
-##     (a young, low-comorbidity subgroup by construction).
-##   - Standardized risk (reported in Table 3 / Figure 4): the AVERAGE
-##     predicted 10-year risk if EVERY participant in the analytic
-##     cohort -- including those who are actually Stage A/B/C, with
-##     their own real age and comorbidity profiles -- were
-##     counterfactually assigned the no-apparent-risk label, holding
-##     every other covariate at each person's own true value. This
-##     estimand never describes any real, currently-existing group of
-##     people; it standardizes to the covariate distribution of the
-##     WHOLE analytic cohort, which is older and more comorbid on
-##     average than the people actually in the no-apparent-risk group.
-## This is the standard interpretation of a g-computation/marginal-
-## standardization estimand, and should be stated as such wherever these
-## numbers are reported (Methods, Table 3 footnote, Results).
-##
-## The reliability of this standardization depends on covariate overlap
-## (positivity): if the no-apparent-risk group's covariate distribution
-## barely overlaps with Stage C's, then predicting "as if a typical
-## Stage C profile had no-apparent-risk phenotype" extrapolates into a
-## region of covariate space with little or no empirical support from
-## the no-apparent-risk group itself, and the resulting prediction is
-## less trustworthy than one made within a well-supported region.
-##
-## Diagnostic below: compares each phenotype group's distribution on the
-## covariates most likely to drive extrapolation (age, PIR -- the two
-## continuous Model 3 covariates), and reports the proportion of each
-## group's age range that falls within the no-apparent-risk group's
-## observed age range (a simple, interpretable overlap check; not a
-## formal propensity-score-based positivity diagnostic, which would be
-## a natural extension if reviewers want it quantified more formally).
 message("\n---- 9.3c Covariate overlap check (age, PIR) across phenotype groups ----")
 overlap_summary <- rep_data %>%
   group_by(hf_continuum_label) %>%
@@ -863,20 +570,6 @@ message("A low percentage for Stage B/C indicates the standardized estimate for 
 ## ============================================================
 ## Conventional (3-level, no-biomarker) phenotype construction
 ## ============================================================
-## CLARIFICATION per review: this is a REASSIGNMENT, not an exclusion.
-## Every participant keeps their row; only the LABEL changes. A person
-## who was originally Stage B (elevated NT-proBNP, no self-reported HF)
-## is re-evaluated against the REMAINING (non-biomarker) criteria only:
-##   - Self-reported HF (MCQ160B==1) -> Stage C
-##   - >=1 of the 7 Model-3 risk factors (HTN, DM, obesity, CKD, smoking,
-##     CHD/MI, stroke) -> Stage A
-##   - Neither -> No apparent HF risk
-## A former Stage B participant is NOT automatically placed in Stage A;
-## they only land there if they independently qualify on a traditional
-## risk factor. If they have none, they fall to "No apparent HF risk".
-## Model formula: conventional_formula below is cox_formula_m3 with
-## hf_continuum_label replaced by conventional_label -- otherwise
-## identical (same 13 covariates, same Model 3 adjustment set).
 imputed_cohorts_conventional <- purrr::map(imputed_cohorts, function(d) {
   d <- d %>%
     mutate(stage_a_model3_flags = as.numeric(
@@ -899,13 +592,7 @@ message("\n---- Verification: conventional_label missingness (should be 0) ----"
 print(sapply(imputed_cohorts_conventional[1:min(3, length(imputed_cohorts_conventional))],
              function(d) sum(is.na(d$conventional_label))))
 
-## ---- NEW: explicit reassignment breakdown, requested by reviewer -----
-## Shows exactly where the original Stage B participants end up under
-## the conventional (no-biomarker) label, in a single representative
-## imputed dataset. This directly answers "where do the 1,121 Stage B
-## participants go" -- some go to Stage A (if they have an independent
-## traditional risk factor), the rest go to "No apparent HF risk" (if
-## they don't) -- confirming they are NOT all defaulted to Stage A.
+## ---- reassignment breakdown -----
 reassignment_check <- imputed_cohorts_conventional[[1]] %>%
   filter(hf_continuum_label == "Stage B (pre-HF, biomarker)") %>%
   count(conventional_label, name = "n") %>%
@@ -917,11 +604,7 @@ message("Total original Stage B participants: ",
         sum(imputed_cohorts_conventional[[1]]$hf_continuum_label == "Stage B (pre-HF, biomarker)"))
 print(reassignment_check)
 
-## ---- Same-N verification, requested by reviewer -----------------------
-## Confirms both models (with Stage B, and conventional) are fit on
-## identical participants -- imputed_cohorts_conventional is built by
-## adding a column to imputed_cohorts, never dropping rows, so N must
-## match exactly in every imputation.
+## ---- Same-N verification -----------------------
 same_n_check <- purrr::map2_dfr(imputed_cohorts, imputed_cohorts_conventional,
                                 function(d_full, d_conv) {
                                   tibble(n_full = nrow(d_full), n_conv = nrow(d_conv), same_n = nrow(d_full) == nrow(d_conv))
@@ -942,8 +625,6 @@ message("Conventional model (no NT-proBNP): ", deparse(conventional_formula))
 ## ============================================================
 ## 9.4 Restricted mean survival time (RMST) -- unadjusted and adjusted
 ## ============================================================
-## RMST = area under the survival curve up to a cutoff tau (step-function
-## integration, right-continuous KM curve).
 rmst <- function(time, surv, tau) {
   ord <- order(time)
   time <- time[ord]; surv <- surv[ord]
@@ -991,12 +672,11 @@ print(rmst_diff_results_adjusted)
 
 
 ## ============================================================
-## Table 3: Mortality risk by HF-continuum phenotype (final)
+## Table 3: Mortality risk by HF-continuum phenotype
 ## ============================================================
 ## Columns: Phenotype, Deaths/person-years, Weighted mortality rate,
 ## Adjusted 10-year mortality risk (from corrected §9.3), Adjusted RMST
-## difference (from corrected §9.4b). HR columns (Unadjusted/Model 1-3)
-## remain in the Forest Plot figure, not repeated here.
+## difference.
 table3_final <- mortality_rate_table %>%
   left_join(
     standardized_summary %>%
@@ -1058,10 +738,6 @@ print(c_stat_summary)
 ## ============================================================
 ## 9.6 Calibration slope, IDI, continuous NRI (10-year horizon)
 ## ============================================================
-## Prediction horizon: 120 months (10 years) for all IDI/NRI
-## calculations below. Participants censored before 120 months (true
-## 10-year status unknown) are excluded from IDI/NRI only -- they remain
-## in the Cox model fits themselves.
 rep_data_full <- imputed_cohorts[[1]] %>%
   mutate(across(c(riagendr, ridreth1, dmdeduc2, hf_continuum_label,
                   flag_hypertension, flag_diabetes, flag_obesity,
@@ -1143,7 +819,7 @@ print(discrimination_summary)
 ## ============================================================
 ## 9.7 Bootstrap 95% CIs (cluster bootstrap, PSU within stratum)
 ## ============================================================
-n_boot <- 200   ## final value -- increase further only if time allows
+n_boot <- 200
 
 cluster_bootstrap_ids <- function(data, psu_var = "sdmvpsu", strata_var = "sdmvstra") {
   strata_ids <- unique(data[[strata_var]])
@@ -1266,7 +942,7 @@ print(discrimination_summary_ci)
 
 
 ## ============================================================
-## Save Results §4/§7 outputs
+## Save Results outputs
 ## ============================================================
 writexl::write_xlsx(
   list(
@@ -1290,14 +966,6 @@ message("\nSaved: data/HF_continuum_trajectory_and_sensitivity.xlsx")
 ## ============================================================
 ## Table 4: Incremental prognostic value of Stage B/pre-HF
 ## ============================================================
-## CLARIFIED wording per review: "conventional model" REASSIGNS former
-## Stage B participants to Stage A or No apparent risk based on
-## remaining criteria (see reassignment_check above) -- it does not
-## exclude them from the analysis. Both models are fit on the identical
-## N (verified above). Prediction horizon: 10 years (120 months).
-## Validation: MI-pooled across 20 imputed datasets. Uncertainty:
-## cluster bootstrap (B=200, PSU resampled within stratum) combined with
-## between-imputation variance via Rubin's rules.
 fmt_ci <- function(point, lower, upper, digits = 3) {
   if (is.na(lower) || is.na(upper)) return(sprintf(paste0("%.", digits, "f"), point))
   sprintf(paste0("%.", digits, "f", " (%.", digits, "f", "-%.", digits, "f", ")"), point, lower, upper)
@@ -1326,8 +994,6 @@ table4 <- tibble(
   `With Stage B` = c(NA, fmt_ci(c_full[1], c_full[2], c_full[3]))
 )
 
-## (kept simple two-row structure above is illustrative; the original
-## wide table format is preserved below for direct output)
 table4_wide <- tibble(
   Metric = c("N (participants)", "C-statistic (95% CI)", "Delta C-statistic (95% CI)",
              "Calibration slope (95% CI)", "IDI (95% CI)", "Continuous NRI (95% CI)"),
